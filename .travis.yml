@@ -1,0 +1,16 @@
+language: python
+python:
+- "3.4"
+- "3.5"
+- "3.6"
+- "3.7-dev"
+cache: pip
+install:
+- pip install --upgrade pip
+- pip install lxml
+- pip install docutils pygments
+script:
+- ./waterbilling --debug-badssl
+- private/check-rst
+
+# vim:ts=2 sts=2 sw=2 et
