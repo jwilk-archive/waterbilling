@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+
+# Copyright © 2017 Jakub Wilk <jwilk@jwilk.net>
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the “Software”), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+import argparse
+import datetime
+import getpass
+import http.cookiejar
+import re
+import ssl
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
+
+import lxml.html
+
+class ScrapingError(RuntimeError):
+
+    def __str__(self):
+        if len(self.args) < 2:
+            return str(*self.args)
+        else:
+            return '{0}: {1!r}'.format(*self.args)
+
+class UserAgent(object):
+
+    user_agent_string = 'waterbilling (https://github.com/jwilk/waterbilling.git)'
+    base_url = 'https://cloud.digitalocean.com/'
+
+    def __init__(self, cafile=None):
+        tls_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=cafile)
+        https_handler = urllib.request.HTTPSHandler(context=tls_context)
+        cookie_jar = http.cookiejar.CookieJar()
+        cookie_proc = urllib.request.HTTPCookieProcessor(cookie_jar)
+        self.opener = urllib.request.build_opener(
+            https_handler,
+            cookie_proc,
+        )
+        self.default_headers = {
+            'User-Agent': self.user_agent_string,
+        }
+
+    def request(self, url, headers=(), **kwargs):
+        url = urllib.parse.urljoin(self.base_url, url)
+        headers = dict(self.default_headers, **(headers or {}))
+        request = urllib.request.Request(
+            url,
+            headers=headers,
+            **kwargs
+        )
+        with self.opener.open(request) as response:
+            return lxml.html.parse(
+                response,
+                base_url=response.geturl()
+            )
+
+    def submit_form(self, method, url, values):
+        if method != 'POST':
+            raise NotImplementedError
+        data = urllib.parse.urlencode(values)
+        data = data.encode('ASCII')
+        return self.request(url, data=data)
+
+def require_python(*version):
+    if sys.version_info < version:
+        version_str = '.'.join(str(x) for x in version)
+        message = 'Python >= {0} is required'.format(version_str)
+        raise RuntimeError(message)
+
+def error(message):
+    ap = argparse.ArgumentParser()
+    message = '{prog}: {msg}'.format(prog=ap.prog, msg=message)
+    print(message, file=sys.stderr)
+    sys.exit(1)
+
+def main():
+    require_python(3, 4)
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--user', metavar='EMAIL', help='e-mail address')
+    ap.add_argument('--password-eval', metavar='COMMAND', help='use password from the COMMAND\'s stdout')
+    ap.add_argument('--ca-file', metavar='FILE', help='trust these CA certificate(s)')
+    ap.add_argument('--debug-badssl', action='store_true', help=argparse.SUPPRESS)
+    options = ap.parse_args()
+    ua = UserAgent(cafile=options.ca_file)
+    if options.debug_badssl:
+        ua.base_url = 'https://self-signed.badssl.com/'
+        try:
+            ua.json_get('/')
+        except urllib.error.URLError as exc:
+            if isinstance(exc.args[0], ssl.SSLError):
+                return
+            else:
+                raise
+    if options.user:
+        user = options.user
+    else:
+        user = input('DigitalOcean user (e-mail address): ')
+    if options.password_eval:
+        password = subprocess.check_output(
+            options.password_eval,
+            shell=True,
+            universal_newlines=True,
+        )
+        password = password.rstrip('\n')
+    else:
+        password = getpass.getpass('DigitalOcean password: ')
+    login_page = ua.request('/login')
+    login_forms = login_page.getroot().forms
+    try:
+        [login_form] = login_forms
+    except ValueError:
+        raise ScrapingError('login/forms#', len(login_forms))
+    login_form.inputs['user[email]'].value = user
+    login_form.inputs['user[password]'].value = password
+    main_page = lxml.html.submit_form(login_form, open_http=ua.submit_form)
+    try:
+        refresh_forms = main_page.getroot().forms
+        try:
+            [refresh_form] = refresh_forms
+        except ValueError:
+            raise ScrapingError('main/forms#', len(refresh_forms))
+        i = refresh_form.inputs['i'].value
+        url = '/settings/billing?' + urllib.parse.urlencode(dict(i=i))
+        billing_page = ua.request(url)
+        is_amount = re.compile('\A-?[$][0-9]+[.][0-9]{2}\Z').match
+        h2s = {}
+        for h2 in billing_page.iterfind('//h2'):
+            text = h2.text.strip()
+            h2s[text] = h2
+        try:
+            h2 = h2s['Your credit']
+        except KeyError:
+            raise ScrapingError('billing/credit')
+        [text] = h2.xpath('./*/text()')
+        if not is_amount(text):
+            raise ScrapingError('billing/credit/value', text)
+        print('Credit:', text)
+        try:
+            h2 = h2s['Usage']
+        except KeyError:
+            raise ScrapingError('billing/usage')
+        [text] = h2.xpath('./*/text()')
+        if not is_amount(text):
+            raise ScrapingError('billing/usage/value', text)
+        print('Usage:', text)
+        history_tables = billing_page.getroot().find_class('Billing--history')
+        try:
+            [history_table] = history_tables
+        except ValueError:
+            raise ScrapingError('billing/history#', len(history_tables))
+        print('History:')
+        for tr in history_table.findall('tbody/tr'):
+            try:
+                [td1, td2, td3, _] = tr
+            except ValueError:
+                raise ScrapingError('billing/history/td#', len(tr))
+            td1 = (td1.text or '').strip()
+            try:
+                dt = datetime.datetime.strptime(td1, '%B %d, %Y')
+            except ValueError:
+                raise ScrapingError('billing/history/td/1', td1)
+            td2 = td2.text or ''
+            td3 = td3.text or ''
+            if not is_amount(td3):
+                raise ScrapingError('billing/history/td/3', td3)
+            print(' ', dt.date(), td3, td2)
+    finally:
+        ua.request('/logout')
+
+if __name__ == '__main__':
+    main()
+
+# vim:ts=4 sts=4 sw=4 et
