@@ -43,7 +43,7 @@ class ScrapingError(RuntimeError):
 
 class UserAgent(object):
 
-    user_agent_string = 'waterbilling (https://github.com/jwilk/waterbilling.git)'
+    user_agent_string = 'waterbilling (https://github.com/jwilk/waterbilling)'
     base_url = 'https://cloud.digitalocean.com/'
 
     def __init__(self, cafile=None):
