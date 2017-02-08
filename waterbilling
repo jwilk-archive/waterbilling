@@ -104,7 +104,7 @@ def main():
     if options.debug_badssl:
         ua.base_url = 'https://self-signed.badssl.com/'
         try:
-            ua.json_get('/')
+            ua.request('/')
         except urllib.error.URLError as exc:
             if isinstance(exc.args[0], ssl.SSLError):
                 return
