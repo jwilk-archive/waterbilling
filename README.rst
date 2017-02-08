@@ -4,9 +4,6 @@ Overview
 **waterbilling** scrapes DigitalOcean website
 to print your billing information:
 
-Prerequisites
-=============
-
 .. code:: console
 
    $ waterbilling --user jwilk@jwilk.net
