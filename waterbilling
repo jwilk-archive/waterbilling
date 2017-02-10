@@ -110,11 +110,11 @@ def main():
                 return
             else:
                 raise
-    if options.user:
+    if options.user is not None:
         user = options.user
     else:
         user = input('DigitalOcean user (e-mail address): ')
-    if options.password_eval:
+    if options.password_eval is not None:
         password = subprocess.check_output(
             options.password_eval,
             shell=True,
