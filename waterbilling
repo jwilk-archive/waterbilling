@@ -23,6 +23,7 @@
 import argparse
 import datetime
 import getpass
+import gzip
 import http.cookiejar
 import re
 import ssl
@@ -57,6 +58,7 @@ class UserAgent(object):
         )
         self.default_headers = {
             'User-Agent': self.user_agent_string,
+            'Accept-Encoding': 'gzip',
         }
 
     def request(self, url, headers=(), **kwargs):
@@ -68,10 +70,14 @@ class UserAgent(object):
             **kwargs
         )
         with self.opener.open(request) as response:
-            return lxml.html.parse(
-                response,
-                base_url=response.geturl()
-            )
+            data = response.read()
+        content_encoding = response.getheader('Content-Encoding', 'identity')
+        if content_encoding != 'gzip':
+            raise NotImplementedError
+        return lxml.html.fromstring(
+            gzip.decompress(data),
+            base_url=response.geturl(),
+        )
 
     def submit_form(self, method, url, values):
         if method != 'POST':
@@ -124,7 +130,7 @@ def main():
     else:
         password = getpass.getpass('DigitalOcean password: ')
     login_page = ua.request('/login')
-    login_forms = login_page.getroot().forms
+    login_forms = login_page.forms
     try:
         [login_form] = login_forms
     except ValueError:
@@ -132,12 +138,12 @@ def main():
     login_form.inputs['user[email]'].value = user
     login_form.inputs['user[password]'].value = password
     main_page = lxml.html.submit_form(login_form, open_http=ua.submit_form)
-    error_elements = main_page.getroot().find_class('errors')
+    error_elements = main_page.find_class('errors')
     if error_elements:
         print('{prog}: login error'.format(prog=ap.prog), file=sys.stderr)
         sys.exit(1)
     try:
-        refresh_forms = main_page.getroot().forms
+        refresh_forms = main_page.forms
         try:
             [refresh_form] = refresh_forms
         except ValueError:
@@ -149,7 +155,7 @@ def main():
         billing_page = ua.request(url)
         is_amount = re.compile('\A-?[$][0-9]+[.][0-9]{2}\Z').match
         h2s = {}
-        for h2 in billing_page.iterfind('//h2'):
+        for h2 in billing_page.iterfind('.//h2'):
             text = h2.text.strip()
             h2s[text] = h2
         try:
@@ -168,7 +174,7 @@ def main():
         if not is_amount(text):
             raise ScrapingError('billing/usage/value', text)
         print('Usage:', text)
-        history_tables = billing_page.getroot().find_class('Billing--history')
+        history_tables = billing_page.find_class('Billing--history')
         try:
             [history_table] = history_tables
         except ValueError:
