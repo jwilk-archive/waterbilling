@@ -132,6 +132,10 @@ def main():
     login_form.inputs['user[email]'].value = user
     login_form.inputs['user[password]'].value = password
     main_page = lxml.html.submit_form(login_form, open_http=ua.submit_form)
+    error_elements = main_page.getroot().find_class('errors')
+    if error_elements:
+        print('{prog}: login error'.format(prog=ap.prog), file=sys.stderr)
+        sys.exit(1)
     try:
         refresh_forms = main_page.getroot().forms
         try:
